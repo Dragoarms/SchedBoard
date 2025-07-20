@@ -294,9 +294,18 @@ except Exception as e:
 page = st.sidebar.radio("Navigation", ["🚶 JMP - Departures", "🏃 JMP - Arrivals", "📊 Tracker & Management"])
 
 # Add logo to sidebar if you have one
-# st.sidebar.image("path_to_your_logo.png", width=200)
+st.sidebar.image("Icons/logo.ico", width=100)
 
 if page == "🚶 JMP - Departures":
+        st.markdown(
+        """
+        <div style="display: flex; align-items: center;">
+            <img src="app/static/Icons/logo.ico" width="30" style="margin-right: 10px;">
+            <span style="font-size: 2.5rem; font-weight: bold;">JMP - Departures</span>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
     st.markdown('<p class="main-header">JMP - Departures</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Log personnel departures</p>', unsafe_allow_html=True)
     
