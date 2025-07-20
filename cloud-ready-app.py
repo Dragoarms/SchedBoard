@@ -61,8 +61,9 @@ def ensure_worksheets_exist(spreadsheet):
             # Create new worksheet
             worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
             # Add headers
-            worksheet.update('A1', [headers])
+            worksheet.update(values=[headers], range_name='A1')
 
+@st.cache_data(ttl=60)  # Cache for 60 seconds
 def get_personnel():
     """Get all personnel from manifest"""
     spreadsheet = get_spreadsheet()
@@ -89,7 +90,7 @@ def add_personnel(name, phone=None, supervisor=None, supervisor_phone=None, comp
     if not personnel_df.empty and name in personnel_df['name'].values:
         # Update existing - find row number
         row_num = personnel_df[personnel_df['name'] == name].index[0] + 2  # +2 for header and 0-index
-        worksheet.update(f'A{row_num}:G{row_num}', [[
+        worksheet.update(values=[[
             name,
             phone or '',
             supervisor or '',
@@ -97,7 +98,7 @@ def add_personnel(name, phone=None, supervisor=None, supervisor_phone=None, comp
             company or '',
             personnel_df[personnel_df['name'] == name]['created_at'].iloc[0],
             datetime.now().isoformat()
-        ]])
+        ]], range_name=f'A{row_num}:G{row_num}')
     else:
         # Add new person
         new_row = [
@@ -110,7 +111,15 @@ def add_personnel(name, phone=None, supervisor=None, supervisor_phone=None, comp
             datetime.now().isoformat()
         ]
         worksheet.append_row(new_row)
+    
+    # Clear cache after modification
+    get_all_departures.clear()
+    get_active_departures.clear()
+    
+    # Clear cache after modification
+    get_personnel.clear()
 
+@st.cache_data(ttl=30)  # Cache for 30 seconds
 def get_all_departures():
     """Get all departures"""
     spreadsheet = get_spreadsheet()
@@ -128,6 +137,7 @@ def get_all_departures():
     
     return df
 
+@st.cache_data(ttl=30)  # Cache for 30 seconds
 def get_active_departures():
     """Get all active (not returned) departures"""
     df = get_all_departures()
@@ -186,7 +196,11 @@ def mark_returned(departure_id):
     row_num = row_index + 2  # +2 for header and 0-index
     
     # Update actual_return column (column F, index 6)
-    worksheet.update(f'F{row_num}', [[datetime.now().isoformat()]])
+    worksheet.update(values=[[datetime.now().isoformat()]], range_name=f'F{row_num}')
+    
+    # Clear cache after modification
+    get_all_departures.clear()
+    get_active_departures.clear()
 
 def extend_departure(departure_id, hours):
     """Extend a departure's expected return time"""
@@ -210,8 +224,8 @@ def extend_departure(departure_id, hours):
     
     # Update expected return and extension count
     current_extensions = int(dep_row['extensions_count'].iloc[0])
-    dep_worksheet.update(f'E{row_num}', [[new_return.isoformat()]])  # Column E for expected_return
-    dep_worksheet.update(f'J{row_num}', [[current_extensions + 1]])  # Column J for extensions_count
+    dep_worksheet.update(values=[[new_return.isoformat()]], range_name=f'E{row_num}')  # Column E for expected_return
+    dep_worksheet.update(values=[[current_extensions + 1]], range_name=f'J{row_num}')  # Column J for extensions_count
     
     # Add extension record
     extensions_data = ext_worksheet.get_all_records()
@@ -224,6 +238,10 @@ def extend_departure(departure_id, hours):
         hours,
         datetime.now().isoformat()
     ])
+    
+    # Clear cache after modification
+    get_all_departures.clear()
+    get_active_departures.clear()
 
 # Initialize spreadsheet and worksheets
 try:
