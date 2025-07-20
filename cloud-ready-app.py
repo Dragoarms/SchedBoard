@@ -7,7 +7,7 @@ from google.oauth2.service_account import Credentials
 # Page config
 st.set_page_config(
     page_title="Camp Tracker",
-    page_icon="🏕️",
+    page_icon="Icons/logo.ico",
     layout="wide",
     initial_sidebar_state="expanded"
 )
