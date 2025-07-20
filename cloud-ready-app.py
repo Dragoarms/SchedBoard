@@ -39,6 +39,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def show_header_with_logo(title, subtitle=None):
+    """Display header with logo"""
+    col1, col2 = st.columns([1, 11])
+    with col1:
+        st.image("Icons/logo.ico", width=50)
+    with col2:
+        st.markdown(f'<p class="main-header" style="margin-top: 10px;">{title}</p>', unsafe_allow_html=True)
+        if subtitle:
+            st.markdown(f'<p class="sub-header">{subtitle}</p>', unsafe_allow_html=True)
+
+
+
 # Authentication check
 def check_password():
     """Returns `True` if the user had the correct password."""
@@ -297,16 +309,13 @@ page = st.sidebar.radio("Navigation", ["🚶 JMP - Departures", "🏃 JMP - Arri
 st.sidebar.image("Icons/logo.ico", width=100)
 
 if page == "🚶 JMP - Departures":
-        st.markdown(
-        """
-        <div style="display: flex; align-items: center;">
-            <img src="app/static/Icons/logo.ico" width="30" style="margin-right: 10px;">
-            <span style="font-size: 2.5rem; font-weight: bold;">JMP - Departures</span>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-    st.markdown('<p class="main-header">JMP - Departures</p>', unsafe_allow_html=True)
+    # Create header with logo
+    col1, col2 = st.columns([0.5, 11.5])
+    with col1:
+        st.image("Icons/logo.ico", width=50)
+    with col2:
+        st.markdown('<p class="main-header">JMP - Departures</p>', unsafe_allow_html=True)
+    
     st.markdown('<p class="sub-header">Log personnel departures</p>', unsafe_allow_html=True)
     
     # Get personnel list
