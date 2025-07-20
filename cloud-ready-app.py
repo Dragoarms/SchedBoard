@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-from streamlit_gsheets import GSheetsConnection
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Page config
 st.set_page_config(
@@ -11,81 +12,134 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Initialize Google Sheets connection
+# Google Sheets setup
 @st.cache_resource
-def get_connection():
-    return st.connection("gsheets", type=GSheetsConnection)
+def get_google_sheets_client():
+    """Initialize Google Sheets client with credentials from secrets"""
+    # Define the scope
+    scope = ['https://spreadsheets.google.com/feeds',
+             'https://www.googleapis.com/auth/drive']
+    
+    # Get credentials from Streamlit secrets
+    creds_dict = st.secrets["connections"]["gsheets"]
+    creds_dict = dict(creds_dict)  # Convert from AttrDict to regular dict
+    
+    # Create credentials object
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+    
+    # Authorize the client
+    client = gspread.authorize(creds)
+    
+    return client
 
-# Sheet names
-PERSONNEL_SHEET = "Personnel"
-DEPARTURES_SHEET = "Departures"
-EXTENSIONS_SHEET = "Extensions"
+@st.cache_resource
+def get_spreadsheet():
+    """Get the Google Sheets spreadsheet"""
+    client = get_google_sheets_client()
+    
+    # Get spreadsheet URL from secrets
+    spreadsheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+    
+    # Open the spreadsheet
+    spreadsheet = client.open_by_url(spreadsheet_url)
+    
+    return spreadsheet
 
-def init_sheets(conn):
-    """Initialize sheets if they don't exist"""
-    try:
-        # Try to read existing sheets
-        conn.read(worksheet=PERSONNEL_SHEET)
-        conn.read(worksheet=DEPARTURES_SHEET)
-        conn.read(worksheet=EXTENSIONS_SHEET)
-    except:
-        # Create initial empty dataframes
-        personnel_df = pd.DataFrame(columns=['name', 'phone', 'supervisor', 'supervisor_phone', 'company', 'created_at', 'updated_at'])
-        departures_df = pd.DataFrame(columns=['id', 'person_name', 'destination', 'departed_at', 'expected_return', 'actual_return', 'phone', 'supervisor', 'company', 'extensions_count', 'is_overdue'])
-        extensions_df = pd.DataFrame(columns=['id', 'departure_id', 'hours_extended', 'extended_at'])
-        
-        # Create sheets
-        conn.create(worksheet=PERSONNEL_SHEET, data=personnel_df)
-        conn.create(worksheet=DEPARTURES_SHEET, data=departures_df)
-        conn.create(worksheet=EXTENSIONS_SHEET, data=extensions_df)
+def ensure_worksheets_exist(spreadsheet):
+    """Ensure all required worksheets exist"""
+    worksheet_names = [ws.title for ws in spreadsheet.worksheets()]
+    
+    # Define required worksheets with headers
+    required_worksheets = {
+        "Personnel": ["name", "phone", "supervisor", "supervisor_phone", "company", "created_at", "updated_at"],
+        "Departures": ["id", "person_name", "destination", "departed_at", "expected_return", "actual_return", "phone", "supervisor", "company", "extensions_count", "is_overdue"],
+        "Extensions": ["id", "departure_id", "hours_extended", "extended_at"]
+    }
+    
+    for sheet_name, headers in required_worksheets.items():
+        if sheet_name not in worksheet_names:
+            # Create new worksheet
+            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
+            # Add headers
+            worksheet.update('A1', [headers])
 
-def get_personnel(conn):
+def get_personnel():
     """Get all personnel from manifest"""
-    df = conn.read(worksheet=PERSONNEL_SHEET, usecols=list(range(7)))
-    return df.dropna(subset=['name'])
+    spreadsheet = get_spreadsheet()
+    worksheet = spreadsheet.worksheet("Personnel")
+    
+    # Get all values
+    data = worksheet.get_all_records()
+    df = pd.DataFrame(data)
+    
+    if df.empty:
+        return pd.DataFrame(columns=['name', 'phone', 'supervisor', 'supervisor_phone', 'company', 'created_at', 'updated_at'])
+    
+    return df[df['name'] != '']  # Filter out empty rows
 
-def add_personnel(conn, name, phone=None, supervisor=None, supervisor_phone=None, company=None):
+def add_personnel(name, phone=None, supervisor=None, supervisor_phone=None, company=None):
     """Add or update a person in the manifest"""
-    personnel_df = get_personnel(conn)
+    spreadsheet = get_spreadsheet()
+    worksheet = spreadsheet.worksheet("Personnel")
+    
+    # Get existing data
+    personnel_df = get_personnel()
     
     # Check if person exists
-    if name in personnel_df['name'].values:
-        # Update existing
-        idx = personnel_df[personnel_df['name'] == name].index[0]
-        personnel_df.loc[idx] = {
-            'name': name,
-            'phone': phone,
-            'supervisor': supervisor,
-            'supervisor_phone': supervisor_phone,
-            'company': company,
-            'created_at': personnel_df.loc[idx, 'created_at'],
-            'updated_at': datetime.now().isoformat()
-        }
+    if not personnel_df.empty and name in personnel_df['name'].values:
+        # Update existing - find row number
+        row_num = personnel_df[personnel_df['name'] == name].index[0] + 2  # +2 for header and 0-index
+        worksheet.update(f'A{row_num}:G{row_num}', [[
+            name,
+            phone or '',
+            supervisor or '',
+            supervisor_phone or '',
+            company or '',
+            personnel_df[personnel_df['name'] == name]['created_at'].iloc[0],
+            datetime.now().isoformat()
+        ]])
     else:
-        # Add new
-        new_person = pd.DataFrame([{
-            'name': name,
-            'phone': phone,
-            'supervisor': supervisor,
-            'supervisor_phone': supervisor_phone,
-            'company': company,
-            'created_at': datetime.now().isoformat(),
-            'updated_at': datetime.now().isoformat()
-        }])
-        personnel_df = pd.concat([personnel_df, new_person], ignore_index=True)
-    
-    # Update sheet
-    conn.update(worksheet=PERSONNEL_SHEET, data=personnel_df)
+        # Add new person
+        new_row = [
+            name,
+            phone or '',
+            supervisor or '',
+            supervisor_phone or '',
+            company or '',
+            datetime.now().isoformat(),
+            datetime.now().isoformat()
+        ]
+        worksheet.append_row(new_row)
 
-def get_active_departures(conn):
+def get_all_departures():
+    """Get all departures"""
+    spreadsheet = get_spreadsheet()
+    worksheet = spreadsheet.worksheet("Departures")
+    
+    data = worksheet.get_all_records()
+    df = pd.DataFrame(data)
+    
+    if df.empty:
+        return pd.DataFrame(columns=["id", "person_name", "destination", "departed_at", "expected_return", "actual_return", "phone", "supervisor", "company", "extensions_count", "is_overdue"])
+    
+    # Convert string columns to appropriate types
+    df['id'] = pd.to_numeric(df['id'], errors='coerce')
+    df['extensions_count'] = pd.to_numeric(df['extensions_count'], errors='coerce').fillna(0)
+    
+    return df
+
+def get_active_departures():
     """Get all active (not returned) departures"""
-    df = conn.read(worksheet=DEPARTURES_SHEET, usecols=list(range(11)))
+    df = get_all_departures()
     
     if df.empty:
         return pd.DataFrame()
     
-    # Filter active departures
-    df = df[df['actual_return'].isna()]
+    # Filter active departures (where actual_return is empty)
+    df = df[df['actual_return'] == '']
+    
+    if df.empty:
+        return pd.DataFrame()
     
     # Check if overdue
     df['expected_return'] = pd.to_datetime(df['expected_return'])
@@ -93,74 +147,91 @@ def get_active_departures(conn):
     
     return df.sort_values('expected_return')
 
-def add_departure(conn, person_name, destination, expected_return, phone=None, supervisor=None, company=None):
+def add_departure(person_name, destination, expected_return, phone=None, supervisor=None, company=None):
     """Log a new departure"""
-    departures_df = conn.read(worksheet=DEPARTURES_SHEET, usecols=list(range(11)))
+    spreadsheet = get_spreadsheet()
+    worksheet = spreadsheet.worksheet("Departures")
     
-    # Generate new ID
-    new_id = len(departures_df) + 1
+    # Get current departures to generate ID
+    departures_df = get_all_departures()
+    new_id = 1 if departures_df.empty else int(departures_df['id'].max()) + 1
     
     # Add new departure
-    new_departure = pd.DataFrame([{
-        'id': new_id,
-        'person_name': person_name,
-        'destination': destination,
-        'departed_at': datetime.now().isoformat(),
-        'expected_return': expected_return.isoformat(),
-        'actual_return': None,
-        'phone': phone,
-        'supervisor': supervisor,
-        'company': company,
-        'extensions_count': 0,
-        'is_overdue': False
-    }])
+    new_row = [
+        new_id,
+        person_name,
+        destination,
+        datetime.now().isoformat(),
+        expected_return.isoformat(),
+        '',  # actual_return (empty)
+        phone or '',
+        supervisor or '',
+        company or '',
+        0,  # extensions_count
+        False  # is_overdue
+    ]
     
-    departures_df = pd.concat([departures_df, new_departure], ignore_index=True)
-    conn.update(worksheet=DEPARTURES_SHEET, data=departures_df)
+    worksheet.append_row(new_row)
 
-def mark_returned(conn, departure_id):
+def mark_returned(departure_id):
     """Mark a departure as returned"""
-    departures_df = conn.read(worksheet=DEPARTURES_SHEET, usecols=list(range(11)))
+    spreadsheet = get_spreadsheet()
+    worksheet = spreadsheet.worksheet("Departures")
     
-    # Update the departure
-    idx = departures_df[departures_df['id'] == departure_id].index[0]
-    departures_df.loc[idx, 'actual_return'] = datetime.now().isoformat()
+    # Get all departures
+    departures_df = get_all_departures()
     
-    conn.update(worksheet=DEPARTURES_SHEET, data=departures_df)
+    # Find the row to update
+    row_index = departures_df[departures_df['id'] == departure_id].index[0]
+    row_num = row_index + 2  # +2 for header and 0-index
+    
+    # Update actual_return column (column F, index 6)
+    worksheet.update(f'F{row_num}', [[datetime.now().isoformat()]])
 
-def extend_departure(conn, departure_id, hours):
+def extend_departure(departure_id, hours):
     """Extend a departure's expected return time"""
-    # Update departures
-    departures_df = conn.read(worksheet=DEPARTURES_SHEET, usecols=list(range(11)))
-    idx = departures_df[departures_df['id'] == departure_id].index[0]
+    spreadsheet = get_spreadsheet()
+    dep_worksheet = spreadsheet.worksheet("Departures")
+    ext_worksheet = spreadsheet.worksheet("Extensions")
     
-    current_return = pd.to_datetime(departures_df.loc[idx, 'expected_return'])
+    # Get departure info
+    departures_df = get_all_departures()
+    dep_row = departures_df[departures_df['id'] == departure_id]
+    
+    if dep_row.empty:
+        return
+    
+    row_index = dep_row.index[0]
+    row_num = row_index + 2  # +2 for header and 0-index
+    
+    # Calculate new return time
+    current_return = pd.to_datetime(dep_row['expected_return'].iloc[0])
     new_return = current_return + timedelta(hours=hours)
     
-    departures_df.loc[idx, 'expected_return'] = new_return.isoformat()
-    departures_df.loc[idx, 'extensions_count'] += 1
-    
-    conn.update(worksheet=DEPARTURES_SHEET, data=departures_df)
+    # Update expected return and extension count
+    current_extensions = int(dep_row['extensions_count'].iloc[0])
+    dep_worksheet.update(f'E{row_num}', [[new_return.isoformat()]])  # Column E for expected_return
+    dep_worksheet.update(f'J{row_num}', [[current_extensions + 1]])  # Column J for extensions_count
     
     # Add extension record
-    extensions_df = conn.read(worksheet=EXTENSIONS_SHEET, usecols=list(range(4)))
-    new_extension = pd.DataFrame([{
-        'id': len(extensions_df) + 1,
-        'departure_id': departure_id,
-        'hours_extended': hours,
-        'extended_at': datetime.now().isoformat()
-    }])
+    extensions_data = ext_worksheet.get_all_records()
+    ext_df = pd.DataFrame(extensions_data)
+    new_ext_id = 1 if ext_df.empty else int(ext_df['id'].max()) + 1
     
-    extensions_df = pd.concat([extensions_df, new_extension], ignore_index=True)
-    conn.update(worksheet=EXTENSIONS_SHEET, data=extensions_df)
+    ext_worksheet.append_row([
+        new_ext_id,
+        departure_id,
+        hours,
+        datetime.now().isoformat()
+    ])
 
-# Main app
-conn = get_connection()
-
-# Initialize sheets on first run
-if 'initialized' not in st.session_state:
-    init_sheets(conn)
-    st.session_state.initialized = True
+# Initialize spreadsheet and worksheets
+try:
+    spreadsheet = get_spreadsheet()
+    ensure_worksheets_exist(spreadsheet)
+except Exception as e:
+    st.error(f"Error connecting to Google Sheets: {str(e)}")
+    st.stop()
 
 # Sidebar navigation
 page = st.sidebar.radio("Navigation", ["📝 Departure Form", "📊 Tracker & Management"])
@@ -169,7 +240,7 @@ if page == "📝 Departure Form":
     st.title("🏕️ Camp Departure Form")
     
     # Get personnel list
-    personnel_df = get_personnel(conn)
+    personnel_df = get_personnel()
     
     col1, col2 = st.columns([2, 1])
     
@@ -226,8 +297,8 @@ if page == "📝 Departure Form":
             if submitted:
                 if new_name:  # New person
                     if new_name.strip():
-                        add_personnel(conn, new_name, new_phone, new_supervisor, None, new_company)
-                        add_departure(conn, new_name, destination, expected_return, new_phone, new_supervisor, new_company)
+                        add_personnel(new_name, new_phone, new_supervisor, None, new_company)
+                        add_departure(new_name, destination, expected_return, new_phone, new_supervisor, new_company)
                         st.success(f"✅ {new_name} logged as departed to {destination}")
                         st.rerun()
                     else:
@@ -235,7 +306,6 @@ if page == "📝 Departure Form":
                 elif selected_name and selected_name != "-- Add New Person --":  # Existing person
                     person = personnel_df[personnel_df['name'] == selected_name].iloc[0]
                     add_departure(
-                        conn,
                         selected_name, 
                         destination, 
                         expected_return,
@@ -251,7 +321,7 @@ if page == "📝 Departure Form":
     with col2:
         # Quick stats
         st.markdown("### 📊 Current Status")
-        active_departures = get_active_departures(conn)
+        active_departures = get_active_departures()
         
         metric_col1, metric_col2 = st.columns(2)
         with metric_col1:
@@ -270,7 +340,7 @@ elif page == "📊 Tracker & Management":
     tab1, tab2, tab3 = st.tabs(["📍 Active Departures", "📋 Personnel Manifest", "📈 Statistics"])
     
     with tab1:
-        active_departures = get_active_departures(conn)
+        active_departures = get_active_departures()
         
         if active_departures.empty:
             st.success("✅ Everyone is in camp!")
@@ -311,20 +381,20 @@ elif page == "📊 Tracker & Management":
                         col_ext1, col_ext2, col_ext3 = st.columns(3)
                         with col_ext1:
                             if st.button("+1h", key=f"ext1_{dep['id']}"):
-                                extend_departure(conn, dep['id'], 1)
+                                extend_departure(dep['id'], 1)
                                 st.rerun()
                         with col_ext2:
                             if st.button("+2h", key=f"ext2_{dep['id']}"):
-                                extend_departure(conn, dep['id'], 2)
+                                extend_departure(dep['id'], 2)
                                 st.rerun()
                         with col_ext3:
                             if st.button("+3h", key=f"ext3_{dep['id']}"):
-                                extend_departure(conn, dep['id'], 3)
+                                extend_departure(dep['id'], 3)
                                 st.rerun()
                     
                     with col3:
                         if st.button("✅ Mark Returned", key=f"return_{dep['id']}", type="primary"):
-                            mark_returned(conn, dep['id'])
+                            mark_returned(dep['id'])
                             st.success(f"{dep['person_name']} marked as returned")
                             st.rerun()
                     
@@ -356,7 +426,10 @@ elif page == "📊 Tracker & Management":
                             supervisor_phone = row.get('supervisor_phone', row.get('SupervisorPhone'))
                             company = row.get('company', row.get('Company', row.get('organization')))
                             
-                            add_personnel(conn, name, phone, supervisor, supervisor_phone, company)
+                            add_personnel(str(name), str(phone) if pd.notna(phone) else None, 
+                                        str(supervisor) if pd.notna(supervisor) else None, 
+                                        str(supervisor_phone) if pd.notna(supervisor_phone) else None, 
+                                        str(company) if pd.notna(company) else None)
                     
                     st.success(f"✅ Uploaded {len(df)} records to manifest")
                     st.rerun()
@@ -365,7 +438,7 @@ elif page == "📊 Tracker & Management":
         
         # Display current manifest
         st.subheader("Current Personnel Manifest")
-        personnel_df = get_personnel(conn)
+        personnel_df = get_personnel()
         
         if not personnel_df.empty:
             # Add search/filter
@@ -397,22 +470,25 @@ elif page == "📊 Tracker & Management":
         st.subheader("Statistics")
         
         # Get all departures
-        all_departures = conn.read(worksheet=DEPARTURES_SHEET, usecols=list(range(11)))
+        all_departures = get_all_departures()
         
         if not all_departures.empty:
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                total_out = len(get_active_departures(conn))
+                total_out = len(get_active_departures())
                 st.metric("Currently Out", total_out)
             
             with col2:
                 today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-                all_departures['actual_return'] = pd.to_datetime(all_departures['actual_return'])
-                today_returns = len(all_departures[
-                    (all_departures['actual_return'] >= today_start) & 
-                    (all_departures['actual_return'].notna())
-                ])
+                if 'actual_return' in all_departures.columns:
+                    all_departures['actual_return_dt'] = pd.to_datetime(all_departures['actual_return'], errors='coerce')
+                    today_returns = len(all_departures[
+                        (all_departures['actual_return_dt'] >= today_start) & 
+                        (all_departures['actual_return_dt'].notna())
+                    ])
+                else:
+                    today_returns = 0
                 st.metric("Returned Today", today_returns)
             
             with col3:
@@ -423,9 +499,11 @@ elif page == "📊 Tracker & Management":
                 st.metric("Departures Today", total_departures_today)
             
             with col4:
-                completed = all_departures[all_departures['actual_return'].notna()].copy()
+                completed = all_departures[all_departures['actual_return'] != ''].copy()
                 if not completed.empty:
-                    completed['duration'] = (completed['actual_return'] - completed['departed_at']).dt.total_seconds() / 3600
+                    completed['actual_return_dt'] = pd.to_datetime(completed['actual_return'])
+                    completed['departed_at_dt'] = pd.to_datetime(completed['departed_at'])
+                    completed['duration'] = (completed['actual_return_dt'] - completed['departed_at_dt']).dt.total_seconds() / 3600
                     avg_duration = completed['duration'].mean()
                     st.metric("Avg Duration", f"{avg_duration:.1f}h")
                 else:
