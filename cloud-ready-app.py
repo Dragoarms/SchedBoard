@@ -3,31 +3,82 @@ import pandas as pd
 from datetime import datetime, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
+import time
 
-# Page config
+# Page config with custom icon
 st.set_page_config(
-    page_title="Camp Tracker",
-    page_icon="Icons/logo.ico",
+    page_title="JMP Tracker",
+    page_icon="Icons/logo.ico",  # You can replace with a URL to your logo
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Custom CSS for better styling
+st.markdown("""
+<style>
+    .stButton>button {
+        width: 100%;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding-left: 20px;
+        padding-right: 20px;
+    }
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        margin-bottom: 0.5rem;
+    }
+    .sub-header {
+        font-size: 1.2rem;
+        color: #666;
+        margin-bottom: 2rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Authentication check
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == "6218":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password
+        st.text_input(
+            "Password", type="password", on_change=password_entered, key="password"
+        )
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password not correct, show input + error
+        st.text_input(
+            "Password", type="password", on_change=password_entered, key="password"
+        )
+        st.error("😕 Password incorrect")
+        return False
+    else:
+        # Password correct
+        return True
 
 # Google Sheets setup
 @st.cache_resource
 def get_google_sheets_client():
     """Initialize Google Sheets client with credentials from secrets"""
-    # Define the scope
     scope = ['https://spreadsheets.google.com/feeds',
              'https://www.googleapis.com/auth/drive']
     
-    # Get credentials from Streamlit secrets
     creds_dict = st.secrets["connections"]["gsheets"]
-    creds_dict = dict(creds_dict)  # Convert from AttrDict to regular dict
+    creds_dict = dict(creds_dict)
     
-    # Create credentials object
     creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-    
-    # Authorize the client
     client = gspread.authorize(creds)
     
     return client
@@ -36,60 +87,63 @@ def get_google_sheets_client():
 def get_spreadsheet():
     """Get the Google Sheets spreadsheet"""
     client = get_google_sheets_client()
-    
-    # Get spreadsheet URL from secrets
     spreadsheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
-    
-    # Open the spreadsheet
     spreadsheet = client.open_by_url(spreadsheet_url)
-    
     return spreadsheet
 
 def ensure_worksheets_exist(spreadsheet):
     """Ensure all required worksheets exist"""
     worksheet_names = [ws.title for ws in spreadsheet.worksheets()]
     
-    # Define required worksheets with headers
     required_worksheets = {
         "Personnel": ["name", "phone", "supervisor", "supervisor_phone", "company", "created_at", "updated_at"],
-        "Departures": ["id", "person_name", "destination", "departed_at", "expected_return", "actual_return", "phone", "supervisor", "company", "extensions_count", "is_overdue"],
-        "Extensions": ["id", "departure_id", "hours_extended", "extended_at"]
+        "Departures": ["id", "person_name", "destination", "departed_at", "expected_return", "actual_return", "phone", "supervisor", "company", "extensions_count", "is_overdue", "group_id"],
+        "Extensions": ["id", "departure_id", "hours_extended", "extended_at"],
+        "Groups": ["id", "group_name", "members", "responsible_person", "created_at"]
     }
     
     for sheet_name, headers in required_worksheets.items():
         if sheet_name not in worksheet_names:
-            # Create new worksheet
             worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
-            # Add headers
             worksheet.update(values=[headers], range_name='A1')
 
-@st.cache_data(ttl=60)  # Cache for 60 seconds
+@st.cache_data(ttl=60)
 def get_personnel():
     """Get all personnel from manifest"""
     spreadsheet = get_spreadsheet()
     worksheet = spreadsheet.worksheet("Personnel")
     
-    # Get all values
     data = worksheet.get_all_records()
     df = pd.DataFrame(data)
     
     if df.empty:
         return pd.DataFrame(columns=['name', 'phone', 'supervisor', 'supervisor_phone', 'company', 'created_at', 'updated_at'])
     
-    return df[df['name'] != '']  # Filter out empty rows
+    return df[df['name'] != '']
+
+@st.cache_data(ttl=30)
+def get_groups():
+    """Get all groups"""
+    spreadsheet = get_spreadsheet()
+    worksheet = spreadsheet.worksheet("Groups")
+    
+    data = worksheet.get_all_records()
+    df = pd.DataFrame(data)
+    
+    if df.empty:
+        return pd.DataFrame(columns=['id', 'group_name', 'members', 'responsible_person', 'created_at'])
+    
+    return df
 
 def add_personnel(name, phone=None, supervisor=None, supervisor_phone=None, company=None):
     """Add or update a person in the manifest"""
     spreadsheet = get_spreadsheet()
     worksheet = spreadsheet.worksheet("Personnel")
     
-    # Get existing data
     personnel_df = get_personnel()
     
-    # Check if person exists
     if not personnel_df.empty and name in personnel_df['name'].values:
-        # Update existing - find row number
-        row_num = personnel_df[personnel_df['name'] == name].index[0] + 2  # +2 for header and 0-index
+        row_num = personnel_df[personnel_df['name'] == name].index[0] + 2
         worksheet.update(values=[[
             name,
             phone or '',
@@ -100,7 +154,6 @@ def add_personnel(name, phone=None, supervisor=None, supervisor_phone=None, comp
             datetime.now().isoformat()
         ]], range_name=f'A{row_num}:G{row_num}')
     else:
-        # Add new person
         new_row = [
             name,
             phone or '',
@@ -112,14 +165,9 @@ def add_personnel(name, phone=None, supervisor=None, supervisor_phone=None, comp
         ]
         worksheet.append_row(new_row)
     
-    # Clear cache after modification
-    get_all_departures.clear()
-    get_active_departures.clear()
-    
-    # Clear cache after modification
     get_personnel.clear()
 
-@st.cache_data(ttl=30)  # Cache for 30 seconds
+@st.cache_data(ttl=30)
 def get_all_departures():
     """Get all departures"""
     spreadsheet = get_spreadsheet()
@@ -129,15 +177,14 @@ def get_all_departures():
     df = pd.DataFrame(data)
     
     if df.empty:
-        return pd.DataFrame(columns=["id", "person_name", "destination", "departed_at", "expected_return", "actual_return", "phone", "supervisor", "company", "extensions_count", "is_overdue"])
+        return pd.DataFrame(columns=["id", "person_name", "destination", "departed_at", "expected_return", "actual_return", "phone", "supervisor", "company", "extensions_count", "is_overdue", "group_id"])
     
-    # Convert string columns to appropriate types
     df['id'] = pd.to_numeric(df['id'], errors='coerce')
     df['extensions_count'] = pd.to_numeric(df['extensions_count'], errors='coerce').fillna(0)
     
     return df
 
-@st.cache_data(ttl=30)  # Cache for 30 seconds
+@st.cache_data(ttl=30)
 def get_active_departures():
     """Get all active (not returned) departures"""
     df = get_all_departures()
@@ -145,103 +192,95 @@ def get_active_departures():
     if df.empty:
         return pd.DataFrame()
     
-    # Filter active departures (where actual_return is empty)
     df = df[df['actual_return'] == '']
     
     if df.empty:
         return pd.DataFrame()
     
-    # Check if overdue
     df['expected_return'] = pd.to_datetime(df['expected_return'])
     df['is_overdue'] = df['expected_return'] < datetime.now()
     
     return df.sort_values('expected_return')
 
-def add_departure(person_name, destination, expected_return, phone=None, supervisor=None, company=None):
+def add_departure(person_name, destination, expected_return, phone=None, supervisor=None, company=None, group_id=None):
     """Log a new departure"""
     spreadsheet = get_spreadsheet()
     worksheet = spreadsheet.worksheet("Departures")
     
-    # Get current departures to generate ID
     departures_df = get_all_departures()
     new_id = 1 if departures_df.empty else int(departures_df['id'].max()) + 1
     
-    # Add new departure
     new_row = [
         new_id,
         person_name,
         destination,
         datetime.now().isoformat(),
         expected_return.isoformat(),
-        '',  # actual_return (empty)
+        '',
         phone or '',
         supervisor or '',
         company or '',
-        0,  # extensions_count
-        False  # is_overdue
+        0,
+        False,
+        group_id or ''
     ]
     
     worksheet.append_row(new_row)
+    
+    get_all_departures.clear()
+    get_active_departures.clear()
 
 def mark_returned(departure_id):
     """Mark a departure as returned"""
     spreadsheet = get_spreadsheet()
     worksheet = spreadsheet.worksheet("Departures")
     
-    # Get all departures
     departures_df = get_all_departures()
     
-    # Find the row to update
     row_index = departures_df[departures_df['id'] == departure_id].index[0]
-    row_num = row_index + 2  # +2 for header and 0-index
+    row_num = row_index + 2
     
-    # Update actual_return column (column F, index 6)
     worksheet.update(values=[[datetime.now().isoformat()]], range_name=f'F{row_num}')
     
-    # Clear cache after modification
     get_all_departures.clear()
     get_active_departures.clear()
 
-def extend_departure(departure_id, hours):
-    """Extend a departure's expected return time"""
+def mark_group_returned(group_id):
+    """Mark all departures in a group as returned"""
     spreadsheet = get_spreadsheet()
-    dep_worksheet = spreadsheet.worksheet("Departures")
-    ext_worksheet = spreadsheet.worksheet("Extensions")
+    worksheet = spreadsheet.worksheet("Departures")
     
-    # Get departure info
     departures_df = get_all_departures()
-    dep_row = departures_df[departures_df['id'] == departure_id]
+    group_departures = departures_df[(departures_df['group_id'] == str(group_id)) & (departures_df['actual_return'] == '')]
     
-    if dep_row.empty:
-        return
+    for _, dep in group_departures.iterrows():
+        row_index = departures_df[departures_df['id'] == dep['id']].index[0]
+        row_num = row_index + 2
+        worksheet.update(values=[[datetime.now().isoformat()]], range_name=f'F{row_num}')
     
-    row_index = dep_row.index[0]
-    row_num = row_index + 2  # +2 for header and 0-index
-    
-    # Calculate new return time
-    current_return = pd.to_datetime(dep_row['expected_return'].iloc[0])
-    new_return = current_return + timedelta(hours=hours)
-    
-    # Update expected return and extension count
-    current_extensions = int(dep_row['extensions_count'].iloc[0])
-    dep_worksheet.update(values=[[new_return.isoformat()]], range_name=f'E{row_num}')  # Column E for expected_return
-    dep_worksheet.update(values=[[current_extensions + 1]], range_name=f'J{row_num}')  # Column J for extensions_count
-    
-    # Add extension record
-    extensions_data = ext_worksheet.get_all_records()
-    ext_df = pd.DataFrame(extensions_data)
-    new_ext_id = 1 if ext_df.empty else int(ext_df['id'].max()) + 1
-    
-    ext_worksheet.append_row([
-        new_ext_id,
-        departure_id,
-        hours,
-        datetime.now().isoformat()
-    ])
-    
-    # Clear cache after modification
     get_all_departures.clear()
     get_active_departures.clear()
+
+def add_group(group_name, members, responsible_person):
+    """Add a new group"""
+    spreadsheet = get_spreadsheet()
+    worksheet = spreadsheet.worksheet("Groups")
+    
+    groups_df = get_groups()
+    new_id = 1 if groups_df.empty else int(groups_df['id'].max()) + 1
+    
+    new_row = [
+        new_id,
+        group_name,
+        members,
+        responsible_person,
+        datetime.now().isoformat()
+    ]
+    
+    worksheet.append_row(new_row)
+    get_groups.clear()
+    
+    return new_id
 
 # Initialize spreadsheet and worksheets
 try:
@@ -252,110 +291,291 @@ except Exception as e:
     st.stop()
 
 # Sidebar navigation
-page = st.sidebar.radio("Navigation", ["📝 Departure Form", "📊 Tracker & Management"])
+page = st.sidebar.radio("Navigation", ["🚶 JMP - Departures", "🏃 JMP - Arrivals", "📊 Tracker & Management"])
 
-if page == "📝 Departure Form":
-    st.title("🏕️ Camp Departure Form")
+# Add logo to sidebar if you have one
+# st.sidebar.image("path_to_your_logo.png", width=200)
+
+if page == "🚶 JMP - Departures":
+    st.markdown('<p class="main-header">JMP - Departures</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Log personnel departures</p>', unsafe_allow_html=True)
     
     # Get personnel list
     personnel_df = get_personnel()
+    groups_df = get_groups()
     
-    col1, col2 = st.columns([2, 1])
+    # Departure type selection
+    dep_type = st.radio("Departure Type", ["Individual", "Group"], horizontal=True)
     
-    with col1:
-        # Create form
-        with st.form("departure_form", clear_on_submit=True):
-            # Name selection
-            if not personnel_df.empty:
-                name_options = ["-- Add New Person --"] + personnel_df['name'].tolist()
-                selected_name = st.selectbox("Name", name_options)
-                
-                if selected_name == "-- Add New Person --":
-                    new_name = st.text_input("Enter Name", key="new_name")
-                    new_phone = st.text_input("Phone Number (optional)", key="new_phone")
-                    new_supervisor = st.text_input("Supervisor (optional)", key="new_supervisor")
-                    new_company = st.text_input("Company (optional)", key="new_company")
-                else:
-                    # Get person's details from manifest
-                    person = personnel_df[personnel_df['name'] == selected_name].iloc[0]
-                    new_name = None
-            else:
-                st.info("No personnel in manifest. Add new person below.")
-                selected_name = None
-                new_name = st.text_input("Name", key="new_name")
-                new_phone = st.text_input("Phone Number (optional)", key="new_phone")
-                new_supervisor = st.text_input("Supervisor (optional)", key="new_supervisor")
-                new_company = st.text_input("Company (optional)", key="new_company")
+    if dep_type == "Individual":
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            # Searchable dropdown for names
+            all_names = ["➕ Add New Person"] + personnel_df['name'].tolist() if not personnel_df.empty else ["➕ Add New Person"]
             
-            # Destination
+            selected_name = st.selectbox(
+                "Name",
+                options=all_names,
+                index=0,
+                help="Start typing to filter names"
+            )
+            
+            if selected_name == "➕ Add New Person":
+                new_name = st.text_input("Enter Name")
+                person_data = None
+            else:
+                new_name = None
+                person_data = personnel_df[personnel_df['name'] == selected_name].iloc[0] if not personnel_df.empty else None
+            
+            # Always show these fields
             destination = st.text_input("Destination", key="destination")
             
-            # Expected duration
             col_date, col_time = st.columns(2)
             with col_date:
-                duration_hours = st.selectbox(
-                    "Expected Duration",
-                    options=[1, 2, 3, 4, 5, 6, 8, 12, 24],
-                    index=2,  # Default to 3 hours
-                    format_func=lambda x: f"{x} hour{'s' if x > 1 else ''}"
-                )
-            
+                arrival_date = st.date_input("Expected Arrival Date", value=datetime.now().date())
             with col_time:
-                departure_time = st.time_input("Departure Time", value=datetime.now().time())
+                arrival_time = st.time_input("Expected Arrival Time", value=(datetime.now() + timedelta(hours=3)).time())
             
-            # Calculate expected return
-            departure_datetime = datetime.combine(datetime.now().date(), departure_time)
-            expected_return = departure_datetime + timedelta(hours=duration_hours)
+            expected_arrival = datetime.combine(arrival_date, arrival_time)
             
-            st.info(f"Expected return: {expected_return.strftime('%I:%M %p')}")
+            # Show departure time and calculated duration
+            departure_time = datetime.now()
+            duration = expected_arrival - departure_time
+            hours = duration.total_seconds() / 3600
+            
+            st.info(f"📅 Departure: {departure_time.strftime('%I:%M %p')} | ⏱️ Duration: {int(hours)}h {int((hours % 1) * 60)}m")
+            
+            # Only show additional fields if they're missing from records
+            if selected_name == "➕ Add New Person" or (person_data is not None and not person_data.get('phone')):
+                phone = st.text_input("Phone Number")
+            else:
+                phone = person_data.get('phone') if person_data is not None else None
+            
+            if selected_name == "➕ Add New Person" or (person_data is not None and not person_data.get('supervisor')):
+                supervisor = st.text_input("Supervisor")
+            else:
+                supervisor = person_data.get('supervisor') if person_data is not None else None
+            
+            if selected_name == "➕ Add New Person" or (person_data is not None and not person_data.get('company')):
+                company = st.text_input("Company")
+            else:
+                company = person_data.get('company') if person_data is not None else None
             
             # Submit button
-            submitted = st.form_submit_button("Log Departure", use_container_width=True, type="primary")
-            
-            if submitted:
+            if st.button("Log Departure", type="primary", use_container_width=True):
                 if new_name:  # New person
-                    if new_name.strip():
-                        add_personnel(new_name, new_phone, new_supervisor, None, new_company)
-                        add_departure(new_name, destination, expected_return, new_phone, new_supervisor, new_company)
+                    if new_name.strip() and destination.strip():
+                        add_personnel(new_name, phone, supervisor, None, company)
+                        add_departure(new_name, destination, expected_arrival, phone, supervisor, company)
                         st.success(f"✅ {new_name} logged as departed to {destination}")
+                        time.sleep(1)
                         st.rerun()
                     else:
-                        st.error("Please enter a name")
-                elif selected_name and selected_name != "-- Add New Person --":  # Existing person
-                    person = personnel_df[personnel_df['name'] == selected_name].iloc[0]
-                    add_departure(
-                        selected_name, 
-                        destination, 
-                        expected_return,
-                        person.get('phone'),
-                        person.get('supervisor'),
-                        person.get('company')
-                    )
-                    st.success(f"✅ {selected_name} logged as departed to {destination}")
-                    st.rerun()
+                        st.error("Please enter name and destination")
+                elif selected_name != "➕ Add New Person":  # Existing person
+                    if destination.strip():
+                        add_departure(selected_name, destination, expected_arrival,
+                                    phone or person_data.get('phone'),
+                                    supervisor or person_data.get('supervisor'),
+                                    company or person_data.get('company'))
+                        st.success(f"✅ {selected_name} logged as departed to {destination}")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("Please enter destination")
                 else:
                     st.error("Please select or enter a name")
-    
-    with col2:
-        # Quick stats
-        st.markdown("### 📊 Current Status")
-        active_departures = get_active_departures()
         
-        metric_col1, metric_col2 = st.columns(2)
-        with metric_col1:
-            st.metric("Currently Out", len(active_departures))
-        with metric_col2:
+        with col2:
+            # Quick stats
+            st.markdown("### 📊 Current Status")
+            active_departures = get_active_departures()
+            
+            total_out = len(active_departures)
             overdue_count = len(active_departures[active_departures['is_overdue'] == True]) if not active_departures.empty else 0
+            
+            st.metric("Currently Out", total_out)
             st.metric("Overdue", overdue_count, delta_color="inverse")
+            
+            if overdue_count > 0:
+                st.error(f"⚠️ {overdue_count} people are overdue!")
+    
+    else:  # Group departure
+        st.subheader("Group Departure")
         
-        if overdue_count > 0:
-            st.error(f"⚠️ {overdue_count} people are overdue!")
+        # Option to select existing group or create new
+        group_option = st.radio("Group Option", ["Select Existing Group", "Create New Group"], horizontal=True)
+        
+        if group_option == "Select Existing Group" and not groups_df.empty:
+            selected_group = st.selectbox("Select Group", groups_df['group_name'].tolist())
+            group_data = groups_df[groups_df['group_name'] == selected_group].iloc[0]
+            members = group_data['members'].split(',')
+            responsible_person = group_data['responsible_person']
+            
+            st.info(f"**Members:** {', '.join(members)}")
+            st.info(f"**Responsible Person:** {responsible_person}")
+            
+            destination = st.text_input("Destination for entire group")
+            
+            col_date, col_time = st.columns(2)
+            with col_date:
+                arrival_date = st.date_input("Expected Arrival Date", value=datetime.now().date(), key="group_date")
+            with col_time:
+                arrival_time = st.time_input("Expected Arrival Time", value=(datetime.now() + timedelta(hours=3)).time(), key="group_time")
+            
+            expected_arrival = datetime.combine(arrival_date, arrival_time)
+            
+            if st.button("Log Group Departure", type="primary"):
+                if destination.strip():
+                    group_id = group_data['id']
+                    # Log departure for each member
+                    for member in members:
+                        member = member.strip()
+                        add_departure(member, destination, expected_arrival, group_id=group_id)
+                    st.success(f"✅ Group '{selected_group}' logged as departed to {destination}")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Please enter destination")
+        
+        else:  # Create new group
+            group_name = st.text_input("Group Name (e.g., 'Night Shift Team')")
+            members_input = st.text_area("Members (one per line)", height=150)
+            responsible_person = st.text_input("Responsible Person")
+            
+            if st.button("Create Group", type="secondary"):
+                if group_name and members_input and responsible_person:
+                    members = [m.strip() for m in members_input.split('\n') if m.strip()]
+                    members_str = ','.join(members)
+                    
+                    # Add all members to personnel if they don't exist
+                    for member in members:
+                        personnel_df = get_personnel()
+                        if member not in personnel_df['name'].values:
+                            add_personnel(member)
+                    
+                    group_id = add_group(group_name, members_str, responsible_person)
+                    st.success(f"✅ Group '{group_name}' created with {len(members)} members")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Please fill in all fields")
+
+elif page == "🏃 JMP - Arrivals":
+    st.markdown('<p class="main-header">JMP - Arrivals</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Mark personnel as returned</p>', unsafe_allow_html=True)
+    
+    active_departures = get_active_departures()
+    
+    if active_departures.empty:
+        st.success("✅ Everyone is in camp!")
+    else:
+        # Tab view for individual vs group returns
+        tab1, tab2 = st.tabs(["Individual Returns", "Group Returns"])
+        
+        with tab1:
+            # Group by overdue status
+            overdue = active_departures[active_departures['is_overdue'] == True]
+            on_time = active_departures[active_departures['is_overdue'] == False]
+            
+            if not overdue.empty:
+                st.error(f"### 🔴 Overdue ({len(overdue)})")
+                for _, dep in overdue.iterrows():
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    
+                    with col1:
+                        expected_return = pd.to_datetime(dep['expected_return'])
+                        time_overdue = datetime.now() - expected_return
+                        hours_overdue = time_overdue.total_seconds() / 3600
+                        
+                        st.markdown(f"**{dep['person_name']}** → {dep['destination']}")
+                        st.caption(f"Overdue by {int(hours_overdue)}h {int((hours_overdue % 1) * 60)}m")
+                    
+                    with col2:
+                        st.caption(f"Expected: {expected_return.strftime('%I:%M %p')}")
+                        st.caption(f"Departed: {pd.to_datetime(dep['departed_at']).strftime('%I:%M %p')}")
+                    
+                    with col3:
+                        if st.button("✅ Returned", key=f"return_{dep['id']}", type="primary"):
+                            mark_returned(dep['id'])
+                            st.success(f"{dep['person_name']} marked as returned")
+                            time.sleep(1)
+                            st.rerun()
+                
+                st.divider()
+            
+            if not on_time.empty:
+                st.success(f"### 🟢 On Time ({len(on_time)})")
+                for _, dep in on_time.iterrows():
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    
+                    with col1:
+                        expected_return = pd.to_datetime(dep['expected_return'])
+                        time_remaining = expected_return - datetime.now()
+                        hours_remaining = time_remaining.total_seconds() / 3600
+                        
+                        st.markdown(f"**{dep['person_name']}** → {dep['destination']}")
+                        if hours_remaining > 0:
+                            st.caption(f"{int(hours_remaining)}h {int((hours_remaining % 1) * 60)}m remaining")
+                        else:
+                            st.caption("Due now")
+                    
+                    with col2:
+                        st.caption(f"Expected: {expected_return.strftime('%I:%M %p')}")
+                        st.caption(f"Departed: {pd.to_datetime(dep['departed_at']).strftime('%I:%M %p')}")
+                    
+                    with col3:
+                        if st.button("✅ Returned", key=f"return_{dep['id']}", type="primary"):
+                            mark_returned(dep['id'])
+                            st.success(f"{dep['person_name']} marked as returned")
+                            time.sleep(1)
+                            st.rerun()
+        
+        with tab2:
+            # Show active group departures
+            groups_out = active_departures[active_departures['group_id'] != ''].groupby('group_id')
+            
+            if len(groups_out) > 0:
+                st.info(f"### 👥 Active Group Departures ({len(groups_out)})")
+                
+                for group_id, group_deps in groups_out:
+                    groups_df = get_groups()
+                    if not groups_df.empty:
+                        group_info = groups_df[groups_df['id'] == int(group_id)]
+                        if not group_info.empty:
+                            group_name = group_info.iloc[0]['group_name']
+                            st.markdown(f"**{group_name}** ({len(group_deps)} members out)")
+                            
+                            # Show group members
+                            members_list = ", ".join(group_deps['person_name'].tolist())
+                            st.caption(f"Members: {members_list}")
+                            
+                            # Check if any are overdue
+                            any_overdue = any(group_deps['is_overdue'])
+                            if any_overdue:
+                                st.error("⚠️ Some members are overdue!")
+                            
+                            if st.button(f"✅ Mark Entire Group as Returned", key=f"group_return_{group_id}", type="primary"):
+                                mark_group_returned(group_id)
+                                st.success(f"All members of '{group_name}' marked as returned")
+                                time.sleep(1)
+                                st.rerun()
+                            
+                            st.divider()
+            else:
+                st.info("No active group departures")
 
 elif page == "📊 Tracker & Management":
-    st.title("🏕️ Camp Tracker & Management")
+    # Password protection for this page
+    if not check_password():
+        st.stop()
+    
+    st.markdown('<p class="main-header">JMP - Tracker & Management</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Monitor and manage all personnel</p>', unsafe_allow_html=True)
     
     # Tabs
-    tab1, tab2, tab3 = st.tabs(["📍 Active Departures", "📋 Personnel Manifest", "📈 Statistics"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📍 Active Departures", "📋 Personnel Manifest", "👥 Groups", "📈 Statistics"])
     
     with tab1:
         active_departures = get_active_departures()
@@ -363,14 +583,21 @@ elif page == "📊 Tracker & Management":
         if active_departures.empty:
             st.success("✅ Everyone is in camp!")
         else:
-            # Display active departures
+            # Add refresh button
+            col1, col2 = st.columns([3, 1])
+            with col2:
+                if st.button("🔄 Refresh Data"):
+                    get_personnel.clear()
+                    get_all_departures.clear()
+                    get_active_departures.clear()
+                    st.rerun()
+            
+            # Display active departures with management options
             for _, dep in active_departures.iterrows():
-                # Calculate time remaining
                 expected_return = pd.to_datetime(dep['expected_return'])
                 time_remaining = expected_return - datetime.now()
                 hours_remaining = time_remaining.total_seconds() / 3600
                 
-                # Determine status
                 if dep['is_overdue']:
                     status_color = "🔴"
                     status_text = f"OVERDUE by {abs(int(hours_remaining))}h {abs(int((hours_remaining % 1) * 60))}m"
@@ -381,7 +608,6 @@ elif page == "📊 Tracker & Management":
                     status_color = "🟢"
                     status_text = f"{int(hours_remaining)}h {int((hours_remaining % 1) * 60)}m remaining"
                 
-                # Create card
                 with st.container():
                     col1, col2, col3 = st.columns([3, 2, 2])
                     
@@ -394,34 +620,31 @@ elif page == "📊 Tracker & Management":
                     
                     with col2:
                         st.markdown(f"**{status_text}**")
+                        st.caption(f"Expected: {expected_return.strftime('%I:%M %p')}")
                         
-                        # Quick extend buttons
-                        col_ext1, col_ext2, col_ext3 = st.columns(3)
-                        with col_ext1:
-                            if st.button("+1h", key=f"ext1_{dep['id']}"):
-                                extend_departure(dep['id'], 1)
-                                st.rerun()
-                        with col_ext2:
-                            if st.button("+2h", key=f"ext2_{dep['id']}"):
-                                extend_departure(dep['id'], 2)
-                                st.rerun()
-                        with col_ext3:
-                            if st.button("+3h", key=f"ext3_{dep['id']}"):
-                                extend_departure(dep['id'], 3)
-                                st.rerun()
+                        # Extension options
+                        if st.button(f"Extend +1h", key=f"ext_{dep['id']}"):
+                            # TODO: Implement extension functionality
+                            st.info("Extension functionality to be implemented")
                     
                     with col3:
-                        if st.button("✅ Mark Returned", key=f"return_{dep['id']}", type="primary"):
+                        if st.button("✅ Mark Returned", key=f"mgmt_return_{dep['id']}", type="primary"):
                             mark_returned(dep['id'])
                             st.success(f"{dep['person_name']} marked as returned")
+                            time.sleep(1)
                             st.rerun()
+                        
+                        # Contact info
+                        if dep['phone']:
+                            st.caption(f"📞 {dep['phone']}")
+                        if dep['supervisor']:
+                            st.caption(f"👤 {dep['supervisor']}")
                     
                     st.divider()
     
     with tab2:
         st.subheader("Personnel Manifest Upload")
         
-        # File uploader
         uploaded_file = st.file_uploader(
             "Upload CSV file", 
             type=['csv'],
@@ -435,7 +658,6 @@ elif page == "📊 Tracker & Management":
                 st.dataframe(df.head())
                 
                 if st.button("Upload to Manifest", type="primary"):
-                    # Process each row
                     for _, row in df.iterrows():
                         if pd.notna(row.get('name', row.get('Name', row.get('full name')))):
                             name = row.get('name', row.get('Name', row.get('full name')))
@@ -454,12 +676,10 @@ elif page == "📊 Tracker & Management":
             except Exception as e:
                 st.error(f"Error reading CSV: {str(e)}")
         
-        # Display current manifest
         st.subheader("Current Personnel Manifest")
         personnel_df = get_personnel()
         
         if not personnel_df.empty:
-            # Add search/filter
             search = st.text_input("Search personnel", placeholder="Type to search...")
             if search:
                 mask = personnel_df['name'].str.contains(search, case=False, na=False)
@@ -473,7 +693,6 @@ elif page == "📊 Tracker & Management":
                 hide_index=True
             )
             
-            # Download manifest
             csv = personnel_df.to_csv(index=False)
             st.download_button(
                 label="Download Manifest as CSV",
@@ -485,9 +704,24 @@ elif page == "📊 Tracker & Management":
             st.info("No personnel in manifest yet. Upload a CSV to get started.")
     
     with tab3:
+        st.subheader("Group Management")
+        
+        groups_df = get_groups()
+        
+        if not groups_df.empty:
+            for _, group in groups_df.iterrows():
+                with st.expander(f"**{group['group_name']}** - {group['responsible_person']}"):
+                    members = group['members'].split(',')
+                    st.write(f"**Members ({len(members)}):**")
+                    for member in members:
+                        st.write(f"- {member.strip()}")
+                    st.caption(f"Created: {group['created_at']}")
+        else:
+            st.info("No groups created yet.")
+    
+    with tab4:
         st.subheader("Statistics")
         
-        # Get all departures
         all_departures = get_all_departures()
         
         if not all_departures.empty:
@@ -527,26 +761,9 @@ elif page == "📊 Tracker & Management":
                 else:
                     st.metric("Avg Duration", "N/A")
             
-            # Most frequent destinations
             st.subheader("Top Destinations")
             top_destinations = all_departures['destination'].value_counts().head(10)
             if not top_destinations.empty:
                 st.bar_chart(top_destinations)
         else:
             st.info("No departure data available yet.")
-
-# Custom CSS
-st.markdown("""
-<style>
-    .stButton>button {
-        width: 100%;
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 24px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        padding-left: 20px;
-        padding-right: 20px;
-    }
-</style>
-""", unsafe_allow_html=True)
