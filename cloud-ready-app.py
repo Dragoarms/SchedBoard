@@ -1306,7 +1306,7 @@ elif page == "📊 Management":
             display_df = location_df.drop('last_location', axis=1)
             display_df = display_df.drop('is_overdue', axis=1)
             display_df['time_remaining'] = display_df['time_remaining'].apply(
-                lambda x: f"{int(abs(x))}h {int((abs(x) % 1) * 60))}m " + ("overdue" if x < 0 else "left")
+                lambda x: f"{int(abs(x))}h {int((abs(x) % 1) * 60)}m " + ("overdue" if x < 0 else "left")
             )
             
             st.dataframe(
