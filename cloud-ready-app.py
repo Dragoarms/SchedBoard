@@ -302,9 +302,13 @@ except Exception as e:
     st.error(f"Error connecting to Google Sheets: {str(e)}")
     st.stop()
 
-# Sidebar navigation
-page = st.sidebar.radio("Navigation", ["🚶 JMP - Departures", "🏃 JMP - Arrivals", "📊 Tracker & Management"])
 
+# Add QR code to sidebar
+st.sidebar.divider()
+st.sidebar.markdown("### 📱 Quick Access")
+# Use the raw GitHub URL for the image
+qr_url = "https://raw.githubusercontent.com/Dragoarms/SchedBoard/main/jmpboard_qr.png"
+st.sidebar.image(qr_url, caption="Scan to access Camp Tracker", use_column_width=True)
 # Add logo to sidebar if you have one
 st.sidebar.image("Icons/logo.ico", width=100)
 
