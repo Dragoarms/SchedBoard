@@ -555,7 +555,8 @@ def create_personnel_map(active_departures, center_lat=-6.7924, center_lon=39.20
     
     # Add personnel markers
     for _, dep in active_departures.iterrows():
-        if dep.get('last_location'):
+        # Check if last_location column exists and has data
+        if 'last_location' in dep and dep.get('last_location'):
             try:
                 # Parse location data
                 if isinstance(dep['last_location'], str) and dep['last_location'].strip():
@@ -653,6 +654,15 @@ if page == "🏠 Dashboard":
     st.markdown('</div>', unsafe_allow_html=True)
     
     st.markdown('<p class="main-header">JMP Tracker Dashboard</p>', unsafe_allow_html=True)
+    
+    # Add refresh button at top
+    col1, col2, col3 = st.columns([4, 1, 4])
+    with col2:
+        if st.button("🔄 Refresh", key="main_refresh"):
+            get_all_departures.clear()
+            get_active_departures.clear()
+            st.rerun()
+    
     st.markdown('<p class="sub-header">Real-time Personnel Tracking</p>', unsafe_allow_html=True)
     
     # Get active departures
@@ -848,10 +858,6 @@ if page == "🏠 Dashboard":
         arrivals_url = "https://jmpboard.streamlit.app/?page=arrivals"
         st.image(f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={arrivals_url}", width=150)
         st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Auto-refresh every 30 seconds
-    time.sleep(30)
-    st.rerun()
 
 # Departures Page
 elif page == "🚶 Departures":
@@ -1213,7 +1219,7 @@ elif page == "📊 Management":
                         st.caption(f"🕐 Departed: {pd.to_datetime(dep['departed_at']).strftime('%I:%M %p')}")
                         if dep['extensions_count'] > 0:
                             st.caption(f"🔄 Extended {int(dep['extensions_count'])} time(s)")
-                        if dep.get('last_location'):
+                        if 'last_location' in dep and dep.get('last_location'):
                             st.caption(f"📍 Last Location: {dep['last_location']}")
                     
                     with col2:
@@ -1254,8 +1260,11 @@ elif page == "📊 Management":
         if active_departures.empty:
             st.info("No active personnel to display on map")
         else:
-            # Statistics
-            with_locations = active_departures[active_departures['last_location'].notna() & (active_departures['last_location'] != '')]
+            # Statistics - check if column exists
+            if 'last_location' in active_departures.columns:
+                with_locations = active_departures[active_departures['last_location'].notna() & (active_departures['last_location'] != '')]
+            else:
+                with_locations = pd.DataFrame()
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -1283,46 +1292,79 @@ elif page == "📊 Management":
             # Personnel location details
             st.subheader("Location Details")
             
-            location_df = active_departures[['person_name', 'destination', 'phone', 'supervisor', 'time_remaining', 'is_overdue', 'last_location']].copy()
-            
-            # Parse location data for display
-            def parse_location(loc):
-                if pd.isna(loc) or loc == '':
-                    return 'No Location'
-                try:
-                    data = json.loads(loc)
-                    return f"Lat: {data['lat']:.6f}, Lon: {data['lon']:.6f}"
-                except:
-                    return 'Invalid Location'
-            
-            location_df['GPS Coordinates'] = location_df['last_location'].apply(parse_location)
-            location_df['Status'] = location_df.apply(
-                lambda x: '🔴 Overdue' if x['is_overdue'] else 
-                         ('🟡 Due Soon' if x['time_remaining'] < 0.5 else '🟢 On Time'), 
-                axis=1
-            )
-            
-            # Remove the raw location column
-            display_df = location_df.drop('last_location', axis=1)
-            display_df = display_df.drop('is_overdue', axis=1)
-            display_df['time_remaining'] = display_df['time_remaining'].apply(
-                lambda x: f"{int(abs(x))}h {int((abs(x) % 1) * 60)}m " + ("overdue" if x < 0 else "left")
-            )
-            
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "person_name": "Name",
-                    "destination": "Destination",
-                    "phone": "Phone",
-                    "supervisor": "Supervisor",
-                    "time_remaining": "Time",
-                    "GPS Coordinates": "Location",
-                    "Status": "Status"
-                }
-            )
+            # Check if last_location column exists
+            if 'last_location' in active_departures.columns:
+                location_df = active_departures[['person_name', 'destination', 'phone', 'supervisor', 'time_remaining', 'is_overdue', 'last_location']].copy()
+                
+                # Parse location data for display
+                def parse_location(loc):
+                    if pd.isna(loc) or loc == '':
+                        return 'No Location'
+                    try:
+                        data = json.loads(loc)
+                        return f"Lat: {data['lat']:.6f}, Lon: {data['lon']:.6f}"
+                    except:
+                        return 'Invalid Location'
+                
+                location_df['GPS Coordinates'] = location_df['last_location'].apply(parse_location)
+                location_df['Status'] = location_df.apply(
+                    lambda x: '🔴 Overdue' if x['is_overdue'] else 
+                             ('🟡 Due Soon' if x['time_remaining'] < 0.5 else '🟢 On Time'), 
+                    axis=1
+                )
+                
+                # Remove the raw location column
+                display_df = location_df.drop('last_location', axis=1)
+                display_df = display_df.drop('is_overdue', axis=1)
+                display_df['time_remaining'] = display_df['time_remaining'].apply(
+                    lambda x: f"{int(abs(x))}h {int((abs(x) % 1) * 60)}m " + ("overdue" if x < 0 else "left")
+                )
+                
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "person_name": "Name",
+                        "destination": "Destination",
+                        "phone": "Phone",
+                        "supervisor": "Supervisor",
+                        "time_remaining": "Time",
+                        "GPS Coordinates": "Location",
+                        "Status": "Status"
+                    }
+                )
+            else:
+                # If last_location column doesn't exist
+                location_df = active_departures[['person_name', 'destination', 'phone', 'supervisor', 'time_remaining', 'is_overdue']].copy()
+                
+                location_df['Status'] = location_df.apply(
+                    lambda x: '🔴 Overdue' if x['is_overdue'] else 
+                             ('🟡 Due Soon' if x['time_remaining'] < 0.5 else '🟢 On Time'), 
+                    axis=1
+                )
+                
+                location_df['GPS Coordinates'] = 'No Location'
+                
+                display_df = location_df.drop('is_overdue', axis=1)
+                display_df['time_remaining'] = display_df['time_remaining'].apply(
+                    lambda x: f"{int(abs(x))}h {int((abs(x) % 1) * 60)}m " + ("overdue" if x < 0 else "left")
+                )
+                
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "person_name": "Name",
+                        "destination": "Destination",
+                        "phone": "Phone",
+                        "supervisor": "Supervisor",
+                        "time_remaining": "Time",
+                        "GPS Coordinates": "Location",
+                        "Status": "Status"
+                    }
+                )
     
     with tab3:
         st.subheader("Personnel Manifest Upload")
@@ -1385,7 +1427,7 @@ elif page == "📊 Management":
         else:
             st.info("No personnel in manifest yet. Upload a CSV to get started.")
     
-    with tab3:
+    with tab4:
         st.subheader("Group Management")
         
         groups_df = get_groups()
@@ -1401,7 +1443,7 @@ elif page == "📊 Management":
         else:
             st.info("No groups created yet.")
     
-    with tab4:
+    with tab5:
         st.subheader("Statistics")
         
         all_departures = get_all_departures()
