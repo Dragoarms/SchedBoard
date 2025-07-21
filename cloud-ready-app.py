@@ -6,6 +6,14 @@ from google.oauth2.service_account import Credentials
 import time
 import base64
 from streamlit_gps_location import gps_location_button
+import folium
+from streamlit_folium import st_folium
+import zipfile
+import tempfile
+import xml.etree.ElementTree as ET
+import requests
+from io import BytesIO
+import json
 
 # Page config with custom icon
 st.set_page_config(
@@ -366,19 +374,25 @@ def extend_departure(departure_id, hours, gps_location=None):
     
     # Update last location if provided
     if gps_location:
-        departures_worksheet.update(values=[[str(gps_location)]], range_name=f'M{row_num}')
+        location_str = json.dumps(gps_location)
+        departures_worksheet.update(values=[[location_str]], range_name=f'M{row_num}')
     
     # Add extension record
     extensions_worksheet = spreadsheet.worksheet("Extensions")
-    extensions_df = pd.read_sql_query("SELECT * FROM Extensions", spreadsheet) if False else pd.DataFrame()
-    new_ext_id = 1 if extensions_df.empty else len(extensions_df) + 1
+    
+    # Get current extensions to determine new ID
+    try:
+        extensions_data = extensions_worksheet.get_all_records()
+        new_ext_id = len(extensions_data) + 1 if extensions_data else 1
+    except:
+        new_ext_id = 1
     
     new_extension = [
         new_ext_id,
         departure_id,
         hours,
         datetime.now().isoformat(),
-        str(gps_location) if gps_location else ''
+        json.dumps(gps_location) if gps_location else ''
     ]
     
     extensions_worksheet.append_row(new_extension)
@@ -422,6 +436,193 @@ def add_group(group_name, members, responsible_person):
     get_groups.clear()
     
     return new_id
+
+# Map and Location Functions
+@st.cache_data(ttl=3600)
+def load_kmz_tracks():
+    """Load KMZ file from GitHub and extract track data"""
+    try:
+        # Download KMZ file from GitHub
+        kmz_url = "https://raw.githubusercontent.com/Dragoarms/SchedBoard/main/MapFeatures/tracks.kmz"
+        response = requests.get(kmz_url)
+        
+        if response.status_code != 200:
+            st.warning("Could not load map tracks from GitHub")
+            return []
+        
+        # KMZ is a zipped KML file
+        tracks = []
+        with tempfile.TemporaryFile() as tmp:
+            tmp.write(response.content)
+            tmp.seek(0)
+            
+            try:
+                with zipfile.ZipFile(tmp, 'r') as kmz:
+                    # Find the KML file inside
+                    kml_filename = None
+                    for name in kmz.namelist():
+                        if name.endswith('.kml'):
+                            kml_filename = name
+                            break
+                    
+                    if kml_filename:
+                        with kmz.open(kml_filename) as kml_file:
+                            # Parse KML
+                            tree = ET.parse(kml_file)
+                            root = tree.getroot()
+                            
+                            # Define namespaces
+                            ns = {'kml': 'http://www.opengis.net/kml/2.2',
+                                  'gx': 'http://www.google.com/kml/ext/2.2'}
+                            
+                            # Extract placemarks (tracks, paths, etc.)
+                            for placemark in root.findall('.//kml:Placemark', ns):
+                                name_elem = placemark.find('kml:name', ns)
+                                name = name_elem.text if name_elem is not None else "Track"
+                                
+                                # Look for LineString coordinates
+                                for linestring in placemark.findall('.//kml:LineString/kml:coordinates', ns):
+                                    if linestring.text:
+                                        coords = []
+                                        for coord in linestring.text.strip().split():
+                                            parts = coord.split(',')
+                                            if len(parts) >= 2:
+                                                lon, lat = float(parts[0]), float(parts[1])
+                                                coords.append([lat, lon])
+                                        if coords:
+                                            tracks.append({'name': name, 'coordinates': coords})
+                                
+                                # Look for Points
+                                for point in placemark.findall('.//kml:Point/kml:coordinates', ns):
+                                    if point.text:
+                                        parts = point.text.strip().split(',')
+                                        if len(parts) >= 2:
+                                            lon, lat = float(parts[0]), float(parts[1])
+                                            tracks.append({'name': name, 'type': 'point', 'coordinates': [lat, lon]})
+            except Exception as e:
+                st.warning(f"Error parsing KMZ file: {str(e)}")
+                
+        return tracks
+    except Exception as e:
+        st.warning(f"Error loading KMZ file: {str(e)}")
+        return []
+
+def update_location(departure_id, location_data):
+    """Update the last known location for a departure"""
+    if location_data and 'lat' in location_data and 'lon' in location_data:
+        spreadsheet = get_spreadsheet()
+        worksheet = spreadsheet.worksheet("Departures")
+        
+        departures_df = get_all_departures()
+        row_index = departures_df[departures_df['id'] == departure_id].index[0]
+        row_num = row_index + 2
+        
+        location_str = json.dumps({
+            'lat': location_data['lat'],
+            'lon': location_data['lon'],
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        worksheet.update(values=[[location_str]], range_name=f'M{row_num}')
+        
+        get_all_departures.clear()
+        get_active_departures.clear()
+
+def create_personnel_map(active_departures, center_lat=-6.7924, center_lon=39.2083):
+    """Create a Folium map with personnel locations and KMZ tracks"""
+    # Create base map (centered on Dar es Salaam by default)
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=11)
+    
+    # Load and add KMZ tracks
+    tracks = load_kmz_tracks()
+    for track in tracks:
+        if track.get('type') == 'point':
+            # Add point markers
+            folium.Marker(
+                track['coordinates'],
+                popup=track['name'],
+                icon=folium.Icon(color='blue', icon='info-sign')
+            ).add_to(m)
+        else:
+            # Add polylines for tracks
+            folium.PolyLine(
+                track['coordinates'],
+                color='blue',
+                weight=3,
+                opacity=0.8,
+                popup=track['name']
+            ).add_to(m)
+    
+    # Add personnel markers
+    for _, dep in active_departures.iterrows():
+        if dep.get('last_location'):
+            try:
+                # Parse location data
+                if isinstance(dep['last_location'], str) and dep['last_location'].strip():
+                    location_data = json.loads(dep['last_location'])
+                    
+                    # Determine marker color based on status
+                    if dep['is_overdue']:
+                        color = 'red'
+                        icon = 'exclamation-sign'
+                    elif dep['time_remaining'] < 0.5:
+                        color = 'orange'
+                        icon = 'warning-sign'
+                    else:
+                        color = 'green'
+                        icon = 'user'
+                    
+                    # Create popup text
+                    popup_text = f"""
+                    <b>{dep['person_name']}</b><br>
+                    📍 {dep['destination']}<br>
+                    ⏱️ {'OVERDUE' if dep['is_overdue'] else f"{int(dep['time_remaining'])}h {int((dep['time_remaining'] % 1) * 60)}m remaining"}<br>
+                    📞 {dep['phone'] or 'N/A'}<br>
+                    Last Update: {location_data.get('timestamp', 'Unknown')}
+                    """
+                    
+                    # Add marker
+                    folium.Marker(
+                        [location_data['lat'], location_data['lon']],
+                        popup=folium.Popup(popup_text, max_width=300),
+                        icon=folium.Icon(color=color, icon=icon),
+                        tooltip=dep['person_name']
+                    ).add_to(m)
+                    
+                    # Add circle to show approximate area
+                    folium.Circle(
+                        [location_data['lat'], location_data['lon']],
+                        radius=100,  # 100 meters
+                        color=color,
+                        fill=True,
+                        fillColor=color,
+                        fillOpacity=0.2
+                    ).add_to(m)
+                    
+            except Exception as e:
+                pass  # Skip if location data is invalid
+    
+    # Add legend
+    legend_html = '''
+    <div style="position: fixed; 
+                top: 10px; right: 10px; width: 200px; height: auto; 
+                background-color: white; z-index: 1000; 
+                border:2px solid grey; border-radius: 5px;
+                padding: 10px; font-size: 14px;">
+        <p style="margin: 0;"><b>Personnel Status</b></p>
+        <p style="margin: 5px 0;"><span style="color: green;">●</span> On Time</p>
+        <p style="margin: 5px 0;"><span style="color: orange;">●</span> Due Soon (&lt;30min)</p>
+        <p style="margin: 5px 0;"><span style="color: red;">●</span> Overdue</p>
+        <p style="margin: 5px 0;"><span style="color: blue;">━</span> Roads/Tracks</p>
+    </div>
+    '''
+    m.get_root().html.add_child(folium.Element(legend_html))
+    
+    return m
+
+# Session state for live tracking
+if "tracking_enabled" not in st.session_state:
+    st.session_state.tracking_enabled = {}
 
 # Initialize spreadsheet and worksheets
 try:
@@ -948,10 +1149,19 @@ elif page == "🏃 Arrivals":
                     )
                 
                 if st.button("Extend Time", type="primary"):
-                    extend_departure(person_data['id'], hours_to_extend, gps_data)
+                    # Store GPS data properly
+                    location_to_store = None
+                    if gps_data and 'lat' in gps_data and 'lon' in gps_data:
+                        location_to_store = {
+                            'lat': gps_data['lat'],
+                            'lon': gps_data['lon'],
+                            'timestamp': datetime.now().isoformat()
+                        }
+                    
+                    extend_departure(person_data['id'], hours_to_extend, location_to_store)
                     st.success(f"✅ Extended {selected_person}'s return time by {hours_to_extend} hours")
-                    if gps_data:
-                        st.info(f"📍 Location recorded: {gps_data.get('lat', 'N/A')}, {gps_data.get('lon', 'N/A')}")
+                    if location_to_store:
+                        st.info(f"📍 Location recorded: {location_to_store['lat']:.6f}, {location_to_store['lon']:.6f}")
                     time.sleep(1)
                     st.rerun()
 
@@ -965,7 +1175,7 @@ elif page == "📊 Management":
     st.markdown('<p class="sub-header">Monitor and manage all personnel</p>', unsafe_allow_html=True)
     
     # Tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📍 Active Departures", "📋 Personnel Manifest", "👥 Groups", "📈 Statistics"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📍 Active Departures", "🗺️ Map View", "📋 Personnel Manifest", "👥 Groups", "📈 Statistics"])
     
     with tab1:
         active_departures = get_active_departures()
@@ -1037,6 +1247,84 @@ elif page == "📊 Management":
                     st.divider()
     
     with tab2:
+        st.subheader("🗺️ Personnel Location Map")
+        
+        active_departures = get_active_departures()
+        
+        if active_departures.empty:
+            st.info("No active personnel to display on map")
+        else:
+            # Statistics
+            with_locations = active_departures[active_departures['last_location'].notna() & (active_departures['last_location'] != '')]
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Active", len(active_departures))
+            with col2:
+                st.metric("With GPS", len(with_locations))
+            with col3:
+                st.metric("No GPS", len(active_departures) - len(with_locations))
+            with col4:
+                overdue = len(active_departures[active_departures['is_overdue'] == True])
+                st.metric("Overdue", overdue, delta_color="inverse")
+            
+            # Create and display map
+            personnel_map = create_personnel_map(active_departures)
+            
+            # Display the map
+            map_data = st_folium(
+                personnel_map,
+                width=800,
+                height=600,
+                returned_objects=["all"],
+                key="mgmt_personnel_map"
+            )
+            
+            # Personnel location details
+            st.subheader("Location Details")
+            
+            location_df = active_departures[['person_name', 'destination', 'phone', 'supervisor', 'time_remaining', 'is_overdue', 'last_location']].copy()
+            
+            # Parse location data for display
+            def parse_location(loc):
+                if pd.isna(loc) or loc == '':
+                    return 'No Location'
+                try:
+                    data = json.loads(loc)
+                    return f"Lat: {data['lat']:.6f}, Lon: {data['lon']:.6f}"
+                except:
+                    return 'Invalid Location'
+            
+            location_df['GPS Coordinates'] = location_df['last_location'].apply(parse_location)
+            location_df['Status'] = location_df.apply(
+                lambda x: '🔴 Overdue' if x['is_overdue'] else 
+                         ('🟡 Due Soon' if x['time_remaining'] < 0.5 else '🟢 On Time'), 
+                axis=1
+            )
+            
+            # Remove the raw location column
+            display_df = location_df.drop('last_location', axis=1)
+            display_df = display_df.drop('is_overdue', axis=1)
+            display_df['time_remaining'] = display_df['time_remaining'].apply(
+                lambda x: f"{int(abs(x))}h {int((abs(x) % 1) * 60))}m {'overdue' if x < 0 else 'left'}"
+            )
+            
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "person_name": "Name",
+                    "destination": "Destination",
+                    "phone": "Phone",
+                    "supervisor": "Supervisor",
+                    "time_remaining": "Time",
+                    "GPS Coordinates": "Location",
+                    "Status": "Status"
+                }
+            )
+    
+    with tab3:
         st.subheader("Personnel Manifest Upload")
         
         uploaded_file = st.file_uploader(
