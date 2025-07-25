@@ -11,7 +11,7 @@ import json
 from datetime import datetime, timedelta
 import numpy as np
 from config import (
-    LOCAL_TIMEZONE, SHEET_NAMES, SHEET_HEADERS,
+    LOCAL_TIMEZONE, 
     PERSONNEL_CACHE_TTL, DEPARTURES_CACHE_TTL, GROUPS_CACHE_TTL,
     get_current_time
 )
