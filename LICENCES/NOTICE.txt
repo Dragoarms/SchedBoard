@@ -1,0 +1,39 @@
+JMP Tracker - Third Party License Notice
+========================================
+
+This application uses the following open-source libraries:
+
+Streamlit (Apache License 2.0)
+Copyright (c) Streamlit Inc.
+https://github.com/streamlit/streamlit/blob/develop/LICENSE
+
+pandas (BSD 3-Clause License)
+Copyright (c) pandas Development Team
+https://github.com/pandas-dev/pandas/blob/main/LICENSE
+
+gspread (MIT License)
+Copyright (c) Anton Burnashev
+https://github.com/burnash/gspread/blob/master/LICENSE.txt
+
+folium (MIT License)
+Copyright (c) 2013 folium contributors
+https://github.com/python-visualization/folium/blob/main/LICENSE.txt
+
+streamlit-folium (MIT License)
+Copyright (c) Randy Zwitch
+https://github.com/randyzwitch/streamlit-folium/blob/master/LICENSE
+
+Google Auth Libraries (Apache License 2.0)
+Copyright (c) Google Inc.
+https://github.com/googleapis/google-auth-library-python/blob/main/LICENSE
+
+requests (Apache License 2.0)
+Copyright (c) Python Software Foundation
+https://github.com/psf/requests/blob/main/LICENSE
+
+pytz (MIT License)
+Copyright (c) Stuart Bishop
+https://pythonhosted.org/pytz/
+
+========================================
+Full license texts available at the URLs above.
