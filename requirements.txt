@@ -1,9 +1,0 @@
-streamlit
-pandas
-gspread
-google-auth
-google-auth-oauthlib
-streamlit-gps-location
-folium
-streamlit-folium
-requests
