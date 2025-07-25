@@ -7,7 +7,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 import time
-from config import get_text, format_time, get_current_time, SHEET_NAMES, SHEET_HEADERS
+from config import get_text, format_time, get_current_time
 from database import (
     get_active_departures, get_groups, mark_returned, 
     mark_group_returned, extend_departure
