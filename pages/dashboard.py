@@ -178,10 +178,10 @@ def render_dashboard():
                         <strong style="color: {'red' if any_overdue else 'inherit'};">{time_text}</strong>
                     </div>
                 </div>
-                """, unsafe_for_html=True)
+                """, unsafe_allow_html=True)
     
     # PWA Install button
     st.markdown("---")
     add_pwa_install_button()
     
-    st.markdown('</div>', unsafe_for_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
