@@ -309,7 +309,7 @@ def render_departure_card(dep, lang='en'):
             <strong style="color: {'red' if dep['is_overdue'] else 'inherit'};">{time_text}</strong>
         </div>
     </div>
-    """, unsafe_for_html=True)
+    """, unsafe_allow_html=True)
 
 def play_alert_sound():
     """Simple beep sound using Web Audio API"""
@@ -351,7 +351,7 @@ def check_and_play_alerts(overdue_deps):
                 animation: pulse-red 2s infinite;
             }
         </style>
-        """, unsafe_for_html=True)
+        """, unsafe_allow_html=True)
         
         # Check if we should play alert sound (every 10 minutes)
         current_time = get_current_time()
