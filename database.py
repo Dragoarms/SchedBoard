@@ -11,10 +11,9 @@ import json
 from datetime import datetime, timedelta
 import numpy as np
 from config import (
-    LOCAL_TIMEZONE, 
+    LOCAL_TIMEZONE, SHEET_NAMES, SHEET_HEADERS,
     PERSONNEL_CACHE_TTL, DEPARTURES_CACHE_TTL, GROUPS_CACHE_TTL,
-    get_current_time,
-    SHEET_NAMES, SHEET_HEADERS
+    get_current_time
 )
 
 # Cache the Google Sheets client
